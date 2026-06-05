@@ -1,42 +1,131 @@
-name: Fetch Lipscore Ratings
+"""
+Fetch aggregated per-product ratings from Lipscore API and write
+docs/ratings.json + docs/ratings.csv for GitHub Pages.
 
-on:
-  schedule:
-    # Runs at 03:30 UTC every day
-    # Adjust to your timezone if needed (Norway = UTC+1/UTC+2)
-    - cron: "30 3 * * *"
-    - cron: "30 15 * * *"
-  workflow_dispatch: # allow manual runs from the GitHub UI
+Requires env var: LIPSCORE_API_KEY
+"""
 
-permissions:
-  contents: write
+import csv
+import json
+import os
+import sys
+import time
+from pathlib import Path
 
-jobs:
-  fetch-and-publish:
-    runs-on: ubuntu-latest
+import requests
 
-    steps:
-      - name: Check out repo
-        uses: actions/checkout@v4
+API_KEY = os.environ.get("LIPSCORE_API_KEY")
+if not API_KEY:
+    sys.exit("ERROR: LIPSCORE_API_KEY environment variable is not set.")
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+BASE_URL = "https://api.lipscore.com"
+HEADERS = {"X-Authorization": API_KEY}
+PAGE_SIZE = 100
+DOCS_DIR = Path(__file__).parent / "docs"
+DOCS_DIR.mkdir(exist_ok=True)
 
-      - name: Install dependencies
-        run: pip install requests
 
-      - name: Fetch ratings from Lipscore
-        env:
-          LIPSCORE_API_KEY: ${{ secrets.LIPSCORE_API_KEY }}
-        run: python fetch_ratings.py
+def fetch_all_products() -> list[dict]:
+    """Paginate through /products and return all entries."""
+    products = []
+    page = 1
 
-      - name: Commit updated feed files
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/
-          # Only commit if something actually changed
-          git diff --cached --quiet || git commit -m "chore: update Lipscore ratings feed [skip ci]"
-          git push
+    while True:
+        resp = requests.get(
+            f"{BASE_URL}/products",
+            headers=HEADERS,
+            params={"page": page, "per_page": PAGE_SIZE},
+            timeout=30,
+        )
+
+        if resp.status_code == 401:
+            sys.exit("ERROR: Lipscore API returned 401 — check your API key.")
+        resp.raise_for_status()
+
+        batch = resp.json()
+
+        # Handle both list and dict-wrapped responses
+        if isinstance(batch, dict):
+            batch = batch.get("products") or batch.get("data") or []
+
+        if not batch:
+            break
+
+        products.extend(batch)
+        print(f"  Page {page}: {len(batch)} products (total so far: {len(products)})")
+
+        if len(batch) < PAGE_SIZE:
+            break
+
+        page += 1
+        time.sleep(0.2)  # be polite to the API
+
+    return products
+
+
+def normalise(product: dict) -> dict | None:
+    """Extract the fields we care about. Returns None if no ratings yet."""
+    # Lipscore may use different field names across API versions
+    product_id = (
+        product.get("external_id")
+        or product.get("product_id")
+        or product.get("id")
+    )
+    avg_rating = product.get("avg_rating") or product.get("average_rating")
+    review_count = (
+        product.get("votes_count")
+        or product.get("reviews_count")
+        or product.get("review_count")
+        or 0
+    )
+
+    if not product_id or avg_rating is None:
+        return None
+
+    return {
+        "product_id": str(product_id),
+        "avg_rating": round(float(avg_rating), 2),
+        "review_count": int(review_count),
+    }
+
+
+def main():
+    print("Fetching products from Lipscore API...")
+    raw = fetch_all_products()
+    print(f"Total raw products fetched: {len(raw)}")
+
+    records = [r for p in raw if (r := normalise(p)) is not None]
+    print(f"Products with ratings: {len(records)}")
+
+    if not records:
+        print("WARNING: No rated products found. Output files will be empty.")
+
+    # Write JSON
+    json_path = DOCS_DIR / "ratings.json"
+    json_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+    print(f"Written: {json_path}")
+
+    # Write CSV
+    csv_path = DOCS_DIR / "ratings.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["product_id", "avg_rating", "review_count"])
+        writer.writeheader()
+        writer.writerows(records)
+    print(f"Written: {csv_path}")
+
+    # Write a tiny index so GitHub Pages has a root page
+    index_path = DOCS_DIR / "index.html"
+    if not index_path.exists():
+        index_path.write_text(
+            "<html><body>"
+            "<p><a href='ratings.json'>ratings.json</a></p>"
+            "<p><a href='ratings.csv'>ratings.csv</a></p>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()
