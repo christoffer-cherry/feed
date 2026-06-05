@@ -1,0 +1,42 @@
+name: Fetch Lipscore Ratings
+
+on:
+  schedule:
+    # Runs at 03:30 and 15:30 UTC every day
+    # Adjust to your timezone if needed (Norway = UTC+1/UTC+2)
+    - cron: "30 3 * * *"
+    - cron: "30 15 * * *"
+  workflow_dispatch: # allow manual runs from the GitHub UI
+
+permissions:
+  contents: write
+
+jobs:
+  fetch-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Fetch ratings from Lipscore
+        env:
+          LIPSCORE_API_KEY: ${{ secrets.LIPSCORE_API_KEY }}
+        run: python fetch_ratings.py
+
+      - name: Commit updated feed files
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/
+          # Only commit if something actually changed
+          git diff --cached --quiet || git commit -m "chore: update Lipscore ratings feed [skip ci]"
+          git push
