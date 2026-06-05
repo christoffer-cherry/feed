@@ -1,144 +1,144 @@
 """
-Fetch aggregated per-product ratings from Lipscore API and write
-docs/ratings.json + docs/ratings.csv for GitHub Pages.
+Fetch Lipscore Google Shopping XML feed, aggregate ratings per product,
+and write docs/ratings.json + docs/ratings.csv for GitHub Pages.
 
-Requires env vars:
-  LIPSCORE_API_KEY        — the Secret API key from Lipscore settings
-  LIPSCORE_PUBLIC_KEY     — the public API key from Lipscore settings
+Required env vars:
+  LIPSCORE_XML_URL   — full URL to the export.xml feed
+  LIPSCORE_XML_USER  — basic auth username
+  LIPSCORE_XML_PASS  — basic auth password
 """
 
 import csv
 import json
 import os
 import sys
-import time
+import xml.etree.ElementTree as ET
+from collections import defaultdict
 from pathlib import Path
 
 import requests
 
-SECRET_KEY = os.environ.get("LIPSCORE_API_KEY")       # Secret API key
-PUBLIC_KEY = os.environ.get("LIPSCORE_PUBLIC_KEY")    # Public API key
+XML_URL  = os.environ.get("LIPSCORE_XML_URL")
+XML_USER = os.environ.get("LIPSCORE_XML_USER")
+XML_PASS = os.environ.get("LIPSCORE_XML_PASS")
 
-if not SECRET_KEY:
-    sys.exit("ERROR: LIPSCORE_API_KEY environment variable is not set.")
+for var, val in [("LIPSCORE_XML_URL", XML_URL), ("LIPSCORE_XML_USER", XML_USER), ("LIPSCORE_XML_PASS", XML_PASS)]:
+    if not val:
+        sys.exit(f"ERROR: {var} environment variable is not set.")
 
-BASE_URL = "https://api.lipscore.com"
-PAGE_SIZE = 100
 DOCS_DIR = Path(__file__).parent / "docs"
 DOCS_DIR.mkdir(exist_ok=True)
 
 
-def try_request(url, headers, params):
-    """Make a GET request and return (response, error_string)."""
-    try:
-        resp = requests.get(url, headers=headers, params=params, timeout=30)
-        return resp, None
-    except Exception as e:
-        return None, str(e)
+def fetch_xml() -> str:
+    print(f"Fetching XML feed...")
+    resp = requests.get(XML_URL, auth=(XML_USER, XML_PASS), timeout=60)
+    print(f"  Status: {resp.status_code}  Size: {len(resp.content)} bytes")
+    if resp.status_code != 200:
+        sys.exit(f"ERROR: Got {resp.status_code}. Body: {resp.text[:300]}")
+    return resp.text
 
 
-def fetch_all_products() -> list[dict]:
-    """Try multiple auth approaches until one works, then paginate."""
+def aggregate(xml_text: str) -> list[dict]:
+    """Parse XML and compute avg rating + review count per product."""
+    root = ET.fromstring(xml_text)
 
-    # Auth strategies to try in order
-    strategies = [
-        ("X-Authorization: secret key",
-         {"X-Authorization": SECRET_KEY}),
-        ("X-Authorization: public key",
-         {"X-Authorization": PUBLIC_KEY} if PUBLIC_KEY else None),
-        ("Both headers",
-         {"X-Authorization": PUBLIC_KEY, "X-Secret": SECRET_KEY} if PUBLIC_KEY else None),
-        ("Authorization Bearer: secret key",
-         {"Authorization": f"Bearer {SECRET_KEY}"}),
-        ("Authorization Bearer: public key",
-         {"Authorization": f"Bearer {PUBLIC_KEY}"} if PUBLIC_KEY else None),
-    ]
+    # Collect all namespaces used in the document
+    ns = {}
+    for prefix, uri in ET.iterparse.__doc__ and [] or []:
+        ns[prefix] = uri
 
-    working_headers = None
+    # Print root tag so we can see the structure
+    print(f"  Root tag: {root.tag}")
+    if len(root) > 0:
+        first = root[0]
+        print(f"  First child tag: {first.tag}")
+        print(f"  First child children: {[c.tag for c in first][:10]}")
 
-    print("--- Probing auth strategies ---")
-    for name, headers in strategies:
-        if headers is None:
-            print(f"  SKIP  {name} (missing key)")
-            continue
-        resp, err = try_request(
-            f"{BASE_URL}/products",
-            headers=headers,
-            params={"page": 1, "per_page": 1},
-        )
-        if err:
-            print(f"  ERROR {name}: {err}")
-            continue
-        print(f"  {resp.status_code}   {name}  →  {resp.text[:120]}")
-        if resp.status_code == 200:
-            working_headers = headers
-            print(f"  ✓ Using: {name}")
-            break
+    # Ratings accumulator: product_id -> [rating, rating, ...]
+    ratings_map = defaultdict(list)
 
-    if working_headers is None:
-        sys.exit("ERROR: All auth strategies returned non-200. See log above.")
+    # Try multiple XML structures Lipscore might use
+    # Strategy 1: Google Shopping Product Reviews feed
+    # <entry><g:id>...</g:id><g:rating>...</g:rating></entry>
+    g_ns = "http://base.google.com/ns/1.0"
 
-    print("--- Fetching all products ---")
-    products = []
-    page = 1
-    while True:
-        resp = requests.get(
-            f"{BASE_URL}/products",
-            headers=working_headers,
-            params={"page": page, "per_page": PAGE_SIZE},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        batch = resp.json()
-        if isinstance(batch, dict):
-            batch = batch.get("products") or batch.get("data") or []
-        if not batch:
-            break
-        products.extend(batch)
-        print(f"  Page {page}: {len(batch)} products (total: {len(products)})")
-        if len(batch) < PAGE_SIZE:
-            break
-        page += 1
-        time.sleep(0.2)
+    for entry in root.iter("entry"):
+        product_id = None
+        rating = None
 
-    return products
+        # Try g:id / g:rating (Google Shopping format)
+        id_el = entry.find(f"{{{g_ns}}}id") or entry.find("id")
+        rating_el = entry.find(f"{{{g_ns}}}rating") or entry.find("rating")
 
+        if id_el is not None:
+            product_id = (id_el.text or "").strip()
+        if rating_el is not None:
+            try:
+                rating = float(rating_el.text)
+            except (TypeError, ValueError):
+                pass
 
-def normalise(product: dict) -> dict | None:
-    product_id = (
-        product.get("external_id")
-        or product.get("product_id")
-        or product.get("id")
-    )
-    avg_rating = product.get("avg_rating") or product.get("average_rating")
-    review_count = (
-        product.get("votes_count")
-        or product.get("reviews_count")
-        or product.get("review_count")
-        or 0
-    )
-    if not product_id or avg_rating is None:
-        return None
-    return {
-        "product_id": str(product_id),
-        "avg_rating": round(float(avg_rating), 2),
-        "review_count": int(review_count),
-    }
+        if product_id and rating is not None:
+            ratings_map[product_id].append(rating)
+
+    # Strategy 2: Google Customer Reviews format
+    # <review><products><product><product_ids><skus><sku>...</sku>...
+    # <ratings><overall>4</overall></ratings>
+    if not ratings_map:
+        for review in root.iter("review"):
+            rating = None
+            overall = review.find(".//overall")
+            if overall is not None:
+                try:
+                    rating = float(overall.text)
+                except (TypeError, ValueError):
+                    pass
+
+            if rating is None:
+                continue
+
+            # Collect all product IDs mentioned in this review
+            for sku in review.findall(".//sku"):
+                if sku.text:
+                    ratings_map[sku.text.strip()].append(rating)
+            for gtin in review.findall(".//gtin"):
+                if gtin.text:
+                    ratings_map[gtin.text.strip()].append(rating)
+            for mpn in review.findall(".//mpn"):
+                if mpn.text:
+                    ratings_map[mpn.text.strip()].append(rating)
+
+    print(f"  Unique products found: {len(ratings_map)}")
+
+    if not ratings_map:
+        # Dump a sample of the XML to help diagnose structure
+        print("  WARNING: Could not parse any ratings. Raw XML sample:")
+        print(xml_text[:1000])
+
+    records = []
+    for product_id, ratings in sorted(ratings_map.items()):
+        avg = round(sum(ratings) / len(ratings), 2)
+        records.append({
+            "product_id": product_id,
+            "avg_rating": avg,
+            "review_count": len(ratings),
+        })
+
+    return records
 
 
 def main():
-    raw = fetch_all_products()
-    print(f"Total raw products: {len(raw)}")
-    if raw:
-        print(f"Sample keys: {list(raw[0].keys())}")
+    xml_text = fetch_xml()
+    records = aggregate(xml_text)
+    print(f"Total products with ratings: {len(records)}")
 
-    records = [r for p in raw if (r := normalise(p)) is not None]
-    print(f"Products with ratings: {len(records)}")
-
+    # Write JSON
     json_path = DOCS_DIR / "ratings.json"
     json_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
     print(f"Written: {json_path}")
 
+    # Write CSV
     csv_path = DOCS_DIR / "ratings.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["product_id", "avg_rating", "review_count"])
@@ -146,15 +146,16 @@ def main():
         writer.writerows(records)
     print(f"Written: {csv_path}")
 
+    # Minimal index page
     index_path = DOCS_DIR / "index.html"
-    if not index_path.exists():
-        index_path.write_text(
-            "<html><body>"
-            "<p><a href='ratings.json'>ratings.json</a></p>"
-            "<p><a href='ratings.csv'>ratings.csv</a></p>"
-            "</body></html>",
-            encoding="utf-8",
-        )
+    index_path.write_text(
+        "<html><body>"
+        f"<p>{len(records)} products with ratings.</p>"
+        "<p><a href='ratings.json'>ratings.json</a></p>"
+        "<p><a href='ratings.csv'>ratings.csv</a></p>"
+        "</body></html>",
+        encoding="utf-8",
+    )
     print("Done.")
 
 
