@@ -39,7 +39,7 @@ def fetch_all_products() -> list[dict]:
         )
 
         if resp.status_code == 401:
-            sys.exit("ERROR: Lipscore API returned 401 — check your API key.")
+            sys.exit(f"ERROR: 401 Unauthorized. Response: {resp.text}")
         resp.raise_for_status()
 
         batch = resp.json()
