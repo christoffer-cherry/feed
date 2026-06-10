@@ -1,0 +1,63 @@
+{
+  "products_normal_sample": [
+    {
+      "id": 5099018,
+      "internal_id": "1",
+      "sku": [
+        "LipscoreDemo_4716051"
+      ],
+      "name": "Lipscore Ultra i9 SmartPhone",
+      "brand": "Lipscore",
+      "votes": null,
+      "gtin": null,
+      "urls": [
+        "http://www.vipatur.no/"
+      ],
+      "mpn": null,
+      "rating": null,
+      "review_count": null,
+      "internal_ids": [
+        "1"
+      ],
+      "reviews": []
+    },
+    {
+      "id": 5099037,
+      "internal_id": "service_review",
+      "sku": [],
+      "name": "Service reviews",
+      "brand": null,
+      "votes": null,
+      "gtin": null,
+      "urls": [
+        "http://www.vipatur.no/"
+      ],
+      "mpn": null,
+      "rating": null,
+      "review_count": null,
+      "internal_ids": [
+        "service_review"
+      ],
+      "reviews": []
+    },
+    {
+      "id": 5167813,
+      "internal_id": "5099037",
+      "sku": [],
+      "name": "Ringebu herre MoveOn turbukse",
+      "brand": null,
+      "votes": null,
+      "gtin": null,
+      "urls": [
+        "https://staging.www.vipatur.no/move-on/193461/ringebu-herre-moveon-turbukse-sol-gul-m"
+      ],
+      "mpn": null,
+      "rating": null,
+      "review_count": null,
+      "internal_ids": [
+        "5099037"
+      ],
+      "reviews": []
+    }
+  ]
+}
