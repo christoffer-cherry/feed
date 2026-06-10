@@ -190,7 +190,10 @@ def main():
         print(f"  Sample: {records[:3]}")
 
     json_path = DOCS_DIR / "ratings.json"
-    json_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+    json_path.write_text(
+        "\n".join(json.dumps(r) for r in records) + "\n",
+        encoding="utf-8",
+    )
     print(f"Written: {json_path}")
 
     csv_path = DOCS_DIR / "ratings.csv"
