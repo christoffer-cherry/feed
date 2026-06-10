@@ -37,8 +37,34 @@ DOCS_DIR  = Path(__file__).parent / "docs"
 DOCS_DIR.mkdir(exist_ok=True)
 
 
+REVIEW_ENDPOINTS = [
+    "/product_reviews/",
+    "/reviews/",
+    "/votes/",
+]
+
+
 def fetch_all_reviews() -> list[dict]:
-    """Fetch all product reviews from Lipscore /reviews/ endpoint."""
+    """Fetch all product reviews from Lipscore API, trying known endpoint paths."""
+    # Discover which endpoint works
+    working_endpoint = None
+    for ep in REVIEW_ENDPOINTS:
+        probe = requests.get(
+            f"{BASE_URL}{ep}",
+            headers=HEADERS,
+            params={"api_key": PUBLIC_KEY, "page": 1, "per_page": 1},
+            timeout=30,
+        )
+        print(f"  Probe {ep}: HTTP {probe.status_code}")
+        if probe.status_code == 200:
+            working_endpoint = ep
+            break
+
+    if not working_endpoint:
+        sys.exit("ERROR: No working reviews endpoint found. Tried: " + ", ".join(REVIEW_ENDPOINTS))
+
+    print(f"  Using endpoint: {working_endpoint}")
+
     reviews = []
     page = 1
 
@@ -47,10 +73,9 @@ def fetch_all_reviews() -> list[dict]:
             "api_key":  PUBLIC_KEY,
             "page":     page,
             "per_page": PAGE_SIZE,
-            "type":     "product",   # only product reviews, not service reviews
         }
         resp = requests.get(
-            f"{BASE_URL}/reviews/",
+            f"{BASE_URL}{working_endpoint}",
             headers=HEADERS,
             params=params,
             timeout=30,
