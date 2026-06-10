@@ -29,52 +29,77 @@ for var, val in [("LIPSCORE_PUBLIC_KEY", PUBLIC_KEY), ("LIPSCORE_SECRET_KEY", SE
 
 BASE_URL   = "https://api.lipscore.com"
 HEADERS    = {"X-Authorization": SECRET_KEY}
-PAGE_SIZE  = 100
 DOCS_DIR   = Path(__file__).parent / "docs"
 DOCS_DIR.mkdir(exist_ok=True)
+
+
+def fetch_page(page: int, per_page: int) -> tuple[int, list]:
+    """Fetch a single page. Returns (status_code, batch_list)."""
+    params = {
+        "api_key":  PUBLIC_KEY,
+        "page":     page,
+        "per_page": per_page,
+    }
+    resp = requests.get(
+        f"{BASE_URL}/products/",
+        headers=HEADERS,
+        params=params,
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        return resp.status_code, []
+    batch = resp.json()
+    if isinstance(batch, dict):
+        batch = batch.get("products") or batch.get("data") or []
+    return 200, batch
 
 
 def fetch_all_products() -> list[dict]:
     products = []
     page = 1
+    page_size = 50   # smaller pages to avoid the 500 on page 4 with per_page=100
 
     while True:
-        params = {
-            "api_key":  PUBLIC_KEY,
-            "page":     page,
-            "per_page": PAGE_SIZE,
-        }
-        resp = requests.get(
-            f"{BASE_URL}/products/",
-            headers=HEADERS,
-            params=params,
-            timeout=30,
-        )
+        print(f"  Page {page} (per_page={page_size})...", end=" ")
+        status, batch = fetch_page(page, page_size)
 
-        print(f"  Page {page}: HTTP {resp.status_code}")
+        if status == 500:
+            # Try cutting the page in half and re-fetching as smaller chunks
+            smaller = page_size // 2
+            if smaller < 5:
+                print(f"HTTP 500 — cannot reduce page size further. Stopping at {len(products)} products.")
+                break
+            print(f"HTTP 500 — retrying with per_page={smaller}")
+            # Re-fetch this page range as two smaller pages
+            for sub_page_offset in range(2):
+                # Convert to offset-based sub-pages
+                offset_page = (page - 1) * page_size // smaller + sub_page_offset + 1
+                sub_status, sub_batch = fetch_page(offset_page, smaller)
+                print(f"    Sub-page {offset_page} (per_page={smaller}): HTTP {sub_status}, {len(sub_batch)} products")
+                if sub_status == 200 and sub_batch:
+                    products.extend(sub_batch)
+                time.sleep(0.3)
+            page += 1
+            time.sleep(0.3)
+            continue
 
-        if resp.status_code == 500:
-            print(f"  WARNING: Got 500 on page {page} — Lipscore server error. Saving {len(products)} products fetched so far.")
+        if status != 200:
+            print(f"HTTP {status} — stopping.")
             break
-        if resp.status_code != 200:
-            sys.exit(f"ERROR: {resp.status_code} — {resp.text[:300]}")
 
-        batch = resp.json()
-        if isinstance(batch, dict):
-            batch = batch.get("products") or batch.get("data") or []
+        print(f"HTTP 200, {len(batch)} products (total: {len(products) + len(batch)})")
 
         if not batch:
             break
 
         products.extend(batch)
-        print(f"    {len(batch)} products (total: {len(products)})")
 
-        # Print keys from first product so we can verify field names
+        # Log first product to verify field names
         if page == 1 and batch:
             print(f"    Sample keys: {list(batch[0].keys())}")
             print(f"    Sample product: {batch[0]}")
 
-        if len(batch) < PAGE_SIZE:
+        if len(batch) < page_size:
             break
 
         page += 1
@@ -85,25 +110,36 @@ def fetch_all_products() -> list[dict]:
 
 def normalise(product: dict) -> dict | None:
     # internal_id = Shopify Product ID (confirmed by Lipscore support)
+    # Fall back to 'id' (Lipscore's own ID) only as last resort
     product_id = (
         product.get("internal_id")
         or product.get("external_id")
         or product.get("product_id")
         or product.get("id")
     )
-    avg_rating = (
-        product.get("rating")       # confirmed field name from API response
-        or product.get("avg_rating")
-        or product.get("average_rating")
-    )
-    review_count = (
-        product.get("review_count") # confirmed field name from API response
-        or product.get("votes")
-        or product.get("votes_count")
-        or 0
-    )
 
+    # Use explicit None checks — rating=0 is a valid (if rare) value
+    avg_rating = product.get("rating")
+    if avg_rating is None:
+        avg_rating = product.get("avg_rating")
+    if avg_rating is None:
+        avg_rating = product.get("average_rating")
+
+    # votes = total review count (may be named differently per API version)
+    review_count = product.get("review_count")
+    if review_count is None:
+        review_count = product.get("votes")
+    if review_count is None:
+        review_count = product.get("votes_count")
+    if review_count is None:
+        review_count = 0
+
+    # Skip products with no product_id or no rating at all
     if not product_id or avg_rating is None:
+        return None
+
+    # Skip products with zero votes — no real reviews
+    if int(review_count) == 0:
         return None
 
     return {
