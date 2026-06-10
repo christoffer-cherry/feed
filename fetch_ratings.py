@@ -53,6 +53,9 @@ def fetch_all_products() -> list[dict]:
 
         print(f"  Page {page}: HTTP {resp.status_code}")
 
+        if resp.status_code == 500:
+            print(f"  WARNING: Got 500 on page {page} — Lipscore server error. Saving {len(products)} products fetched so far.")
+            break
         if resp.status_code != 200:
             sys.exit(f"ERROR: {resp.status_code} — {resp.text[:300]}")
 
@@ -81,22 +84,22 @@ def fetch_all_products() -> list[dict]:
 
 
 def normalise(product: dict) -> dict | None:
-    # Shopify Product ID is stored as external_id / internal_id
+    # internal_id = Shopify Product ID (confirmed by Lipscore support)
     product_id = (
-        product.get("external_id")
-        or product.get("internal_id")
+        product.get("internal_id")
+        or product.get("external_id")
         or product.get("product_id")
         or product.get("id")
     )
     avg_rating = (
-        product.get("avg_rating")
+        product.get("rating")       # confirmed field name from API response
+        or product.get("avg_rating")
         or product.get("average_rating")
-        or product.get("rating")
     )
     review_count = (
-        product.get("votes_count")
-        or product.get("reviews_count")
-        or product.get("review_count")
+        product.get("review_count") # confirmed field name from API response
+        or product.get("votes")
+        or product.get("votes_count")
         or 0
     )
 
