@@ -76,59 +76,58 @@ def parse_and_aggregate(xml_text: str) -> list[dict]:
     # Accumulate ratings per product_id
     buckets: dict[str, list[float]] = defaultdict(list)
 
-    # Find the container with the most children — that's where the reviews are
-    best_container = root
-    max_children = len(top_children)
-    for child in top_children:
-        n = len(list(child))
-        if n > max_children:
-            max_children = n
-            best_container = child
+    # Find <reviews> container
+    reviews_el = find(root, "reviews")
+    if reviews_el is None:
+        # Fallback: use the container with the most children
+        reviews_el = max(top_children, key=lambda c: len(list(c)), default=root)
 
-    entries = list(best_container)
-    print(f"  Parsing {len(entries)} entries from <{tag(best_container)}>")
+    entries = list(reviews_el)
+    print(f"  Parsing {len(entries)} entries from <{tag(reviews_el)}>")
+
+    # Log first entry to verify field structure
+    if entries:
+        print(f"  First entry XML:\n{ET.tostring(entries[0], encoding='unicode')[:1200]}")
 
     for entry in entries:
-        # Try multiple field name patterns
-        product_id = (
-            findtext(entry, "product_id")
-            or findtext(entry, "productId")
-            or findtext(entry, "external_id")
-            or findtext(entry, "internal_id")
-            or findtext(entry, "sku")
-        )
+        # --- Rating ---
+        # Google PRF v2: <ratings><overall>4</overall></ratings>
+        rating = None
+        ratings_el = find(entry, "ratings")
+        if ratings_el is not None:
+            rating = findtext(ratings_el, "overall")
+        if rating is None:
+            rating = findtext(entry, "rating") or findtext(entry, "score")
 
-        # Check nested product element
-        product_el = find(entry, "product")
-        if not product_id and product_el is not None:
-            product_id = (
-                findtext(product_el, "product_id")
-                or findtext(product_el, "id")
-                or findtext(product_el, "external_id")
-                or findtext(product_el, "internal_id")
-                or findtext(product_el, "sku")
-            )
+        # --- Product ID ---
+        # Google PRF v2: <products><product><product_ids><skus><sku>ID</sku></skus></product_ids></product></products>
+        product_id = None
+        products_el = find(entry, "products")
+        if products_el is not None:
+            product_el = find(products_el, "product")
+            if product_el is not None:
+                pid_el = find(product_el, "product_ids")
+                if pid_el is not None:
+                    # Try skus first, then gtins
+                    for container_name, leaf_name in [("skus", "sku"), ("gtins", "gtin"), ("mpns", "mpn")]:
+                        cont = find(pid_el, container_name)
+                        if cont is not None:
+                            leaf = find(cont, leaf_name)
+                            if leaf is not None and leaf.text:
+                                product_id = leaf.text.strip()
+                                break
+                    # Fallback: direct product_id child
+                    if not product_id:
+                        product_id = findtext(pid_el, "product_id")
 
-        # Google Shopping feed: g:product_ids / g:product_id
+        # Fallback: direct fields on entry
         if not product_id:
-            for child in entry:
-                if tag(child) in ("product_ids", "product_id"):
-                    for sub in child:
-                        if tag(sub) in ("product_id", "gtin", "sku", "id"):
-                            product_id = sub.text.strip() if sub.text else None
-                            break
-
-        rating = (
-            findtext(entry, "rating")
-            or findtext(entry, "score")
-            or findtext(entry, "grade")
-        )
-
-        # Google Shopping: g:ratings/g:overall
-        if not rating:
-            ratings_el = find(entry, "ratings")
-            if ratings_el is not None:
-                rating = findtext(ratings_el, "overall")
+            product_id = (
+                findtext(entry, "product_id")
+                or findtext(entry, "external_id")
+                or findtext(entry, "internal_id")
+                or findtext(entry, "sku")
+            )
 
         if not product_id or rating is None:
             continue
