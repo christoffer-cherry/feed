@@ -1,6 +1,8 @@
 """
-Fetch aggregated per-product ratings from Lipscore API and write
-docs/ratings.json + docs/ratings.csv for GitHub Pages.
+Fetch per-product ratings from Lipscore by aggregating individual reviews.
+
+Uses /reviews/ endpoint (not /products/) because the products list endpoint
+does not populate rating aggregates for this account.
 
 Auth (confirmed by Lipscore support):
   - api_key as query parameter  (public API key)
@@ -16,6 +18,7 @@ import json
 import os
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import requests
@@ -27,135 +30,108 @@ for var, val in [("LIPSCORE_PUBLIC_KEY", PUBLIC_KEY), ("LIPSCORE_SECRET_KEY", SE
     if not val:
         sys.exit(f"ERROR: {var} environment variable is not set.")
 
-BASE_URL   = "https://api.lipscore.com"
-HEADERS    = {"X-Authorization": SECRET_KEY}
-DOCS_DIR   = Path(__file__).parent / "docs"
+BASE_URL  = "https://api.lipscore.com"
+HEADERS   = {"X-Authorization": SECRET_KEY}
+PAGE_SIZE = 100
+DOCS_DIR  = Path(__file__).parent / "docs"
 DOCS_DIR.mkdir(exist_ok=True)
 
 
-def fetch_page(page: int, per_page: int) -> tuple[int, list]:
-    """Fetch a single page. Returns (status_code, batch_list)."""
-    params = {
-        "api_key":  PUBLIC_KEY,
-        "page":     page,
-        "per_page": per_page,
-    }
-    resp = requests.get(
-        f"{BASE_URL}/products/",
-        headers=HEADERS,
-        params=params,
-        timeout=30,
-    )
-    if resp.status_code != 200:
-        return resp.status_code, []
-    batch = resp.json()
-    if isinstance(batch, dict):
-        batch = batch.get("products") or batch.get("data") or []
-    return 200, batch
-
-
-def fetch_all_products() -> list[dict]:
-    products = []
+def fetch_all_reviews() -> list[dict]:
+    """Fetch all product reviews from Lipscore /reviews/ endpoint."""
+    reviews = []
     page = 1
-    page_size = 50   # smaller pages to avoid the 500 on page 4 with per_page=100
 
     while True:
-        print(f"  Page {page} (per_page={page_size})...", end=" ")
-        status, batch = fetch_page(page, page_size)
+        params = {
+            "api_key":  PUBLIC_KEY,
+            "page":     page,
+            "per_page": PAGE_SIZE,
+            "type":     "product",   # only product reviews, not service reviews
+        }
+        resp = requests.get(
+            f"{BASE_URL}/reviews/",
+            headers=HEADERS,
+            params=params,
+            timeout=30,
+        )
 
-        if status == 500:
-            # Try cutting the page in half and re-fetching as smaller chunks
-            smaller = page_size // 2
-            if smaller < 5:
-                print(f"HTTP 500 — cannot reduce page size further. Stopping at {len(products)} products.")
-                break
-            print(f"HTTP 500 — retrying with per_page={smaller}")
-            # Re-fetch this page range as two smaller pages
-            for sub_page_offset in range(2):
-                # Convert to offset-based sub-pages
-                offset_page = (page - 1) * page_size // smaller + sub_page_offset + 1
-                sub_status, sub_batch = fetch_page(offset_page, smaller)
-                print(f"    Sub-page {offset_page} (per_page={smaller}): HTTP {sub_status}, {len(sub_batch)} products")
-                if sub_status == 200 and sub_batch:
-                    products.extend(sub_batch)
-                time.sleep(0.3)
-            page += 1
-            time.sleep(0.3)
-            continue
+        print(f"  Page {page}: HTTP {resp.status_code}", end=" ")
 
-        if status != 200:
-            print(f"HTTP {status} — stopping.")
+        if resp.status_code == 500:
+            print(f"— server error. Saving {len(reviews)} reviews fetched so far.")
             break
+        if resp.status_code != 200:
+            sys.exit(f"\nERROR: {resp.status_code} — {resp.text[:300]}")
 
-        print(f"HTTP 200, {len(batch)} products (total: {len(products) + len(batch)})")
+        batch = resp.json()
+        if isinstance(batch, dict):
+            batch = batch.get("reviews") or batch.get("data") or []
+
+        print(f"— {len(batch)} reviews (total: {len(reviews) + len(batch)})")
 
         if not batch:
             break
 
-        products.extend(batch)
+        reviews.extend(batch)
 
-        # Log first product to verify field names
+        # Log first review to verify field names
         if page == 1 and batch:
             print(f"    Sample keys: {list(batch[0].keys())}")
-            print(f"    Sample product: {batch[0]}")
+            print(f"    Sample review: {batch[0]}")
 
-        if len(batch) < page_size:
+        if len(batch) < PAGE_SIZE:
             break
 
         page += 1
         time.sleep(0.2)
 
-    return products
+    return reviews
 
 
-def normalise(product: dict) -> dict | None:
-    # internal_id = Shopify Product ID (confirmed by Lipscore support)
-    # Fall back to 'id' (Lipscore's own ID) only as last resort
-    product_id = (
-        product.get("internal_id")
-        or product.get("external_id")
-        or product.get("product_id")
-        or product.get("id")
-    )
+def aggregate_by_product(reviews: list[dict]) -> list[dict]:
+    """Group reviews by product_id and compute avg_rating + review_count."""
+    buckets: dict[str, list[float]] = defaultdict(list)
 
-    # Use explicit None checks — rating=0 is a valid (if rare) value
-    avg_rating = product.get("rating")
-    if avg_rating is None:
-        avg_rating = product.get("avg_rating")
-    if avg_rating is None:
-        avg_rating = product.get("average_rating")
+    for r in reviews:
+        # Product-ID field names to try (check sample log to confirm)
+        product_id = (
+            r.get("product_id")
+            or r.get("product", {}).get("id") if isinstance(r.get("product"), dict) else None
+            or r.get("product", {}).get("internal_id") if isinstance(r.get("product"), dict) else None
+            or r.get("internal_id")
+        )
+        rating = r.get("rating") or r.get("score")
 
-    # votes = total review count (may be named differently per API version)
-    review_count = product.get("review_count")
-    if review_count is None:
-        review_count = product.get("votes")
-    if review_count is None:
-        review_count = product.get("votes_count")
-    if review_count is None:
-        review_count = 0
+        if not product_id or rating is None:
+            continue
 
-    # Skip products with no product_id or no rating at all
-    if not product_id or avg_rating is None:
-        return None
+        try:
+            buckets[str(product_id)].append(float(rating))
+        except (ValueError, TypeError):
+            continue
 
-    # Skip products with zero votes — no real reviews
-    if int(review_count) == 0:
-        return None
+    records = []
+    for product_id, ratings in buckets.items():
+        records.append({
+            "product_id":   product_id,
+            "avg_rating":   round(sum(ratings) / len(ratings), 2),
+            "review_count": len(ratings),
+        })
 
-    return {
-        "product_id":   str(product_id),
-        "avg_rating":   round(float(avg_rating), 2),
-        "review_count": int(review_count),
-    }
+    return sorted(records, key=lambda x: x["product_id"])
 
 
 def main():
-    print("Fetching products from Lipscore API...")
-    raw = fetch_all_products()
-    print(f"Total products fetched: {len(raw)}")
+    print("Fetching reviews from Lipscore API...")
+    raw_reviews = fetch_all_reviews()
+    print(f"Total reviews fetched: {len(raw_reviews)}")
 
-    records = [r for p in raw if (r := normalise(p)) is not None]
+    records = aggregate_by_product(raw_reviews)
     print(f"Products with ratings: {len(records)}")
+
+    if records:
+        print(f"  Sample output: {records[:3]}")
 
     json_path = DOCS_DIR / "ratings.json"
     json_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
