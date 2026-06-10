@@ -1,151 +1,177 @@
 """
-DIAGNOSTIC: Probe Lipscore API to find correct endpoint and field names for ratings.
+Fetch per-product ratings from Lipscore review export XML and write
+docs/ratings.json + docs/ratings.csv for GitHub Pages.
 
-Tries multiple approaches and logs the full responses so we can identify what works.
+Aggregates individual reviews by product ID to produce avg_rating + review_count.
 
 Required env vars:
-  LIPSCORE_PUBLIC_KEY   — public API key (api_key query param)
-  LIPSCORE_SECRET_KEY   — secret API key (X-Authorization header)
+  LIPSCORE_XML_URL    — full URL to the Lipscore export XML
+  LIPSCORE_XML_USER   — Lipscore account username / email (for Basic Auth)
+  LIPSCORE_XML_PASS   — Lipscore account password (for Basic Auth)
 """
 
 import csv
 import json
 import os
 import sys
-import time
+import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
 
 import requests
 
-PUBLIC_KEY = os.environ.get("LIPSCORE_PUBLIC_KEY")
-SECRET_KEY = os.environ.get("LIPSCORE_SECRET_KEY")
+XML_URL  = os.environ.get("LIPSCORE_XML_URL")
+XML_USER = os.environ.get("LIPSCORE_XML_USER")
+XML_PASS = os.environ.get("LIPSCORE_XML_PASS")
 
-for var, val in [("LIPSCORE_PUBLIC_KEY", PUBLIC_KEY), ("LIPSCORE_SECRET_KEY", SECRET_KEY)]:
+for var, val in [("LIPSCORE_XML_URL", XML_URL), ("LIPSCORE_XML_USER", XML_USER), ("LIPSCORE_XML_PASS", XML_PASS)]:
     if not val:
         sys.exit(f"ERROR: {var} environment variable is not set.")
 
-BASE_URL = "https://api.lipscore.com"
 DOCS_DIR = Path(__file__).parent / "docs"
 DOCS_DIR.mkdir(exist_ok=True)
 
-# Product-IDs seen in the Lipscore dashboard (confirmed to have reviews)
-KNOWN_PRODUCT_IDS = ["10068807844120", "10068813218072", "9425864622360"]
+
+def fetch_xml() -> str:
+    print(f"Fetching XML from Lipscore...")
+    resp = requests.get(XML_URL, auth=(XML_USER, XML_PASS), timeout=60)
+    print(f"  HTTP {resp.status_code}, {len(resp.content)} bytes")
+    if resp.status_code != 200:
+        sys.exit(f"ERROR: {resp.status_code} — {resp.text[:300]}")
+    return resp.text
 
 
-def get(path, params=None, headers=None):
-    default_headers = {"X-Authorization": SECRET_KEY}
-    if headers:
-        default_headers.update(headers)
-    default_params = {"api_key": PUBLIC_KEY}
-    if params:
-        default_params.update(params)
-    resp = requests.get(f"{BASE_URL}{path}", headers=default_headers, params=default_params, timeout=30)
-    return resp
+def parse_and_aggregate(xml_text: str) -> list[dict]:
+    root = ET.fromstring(xml_text)
 
+    # Log the root tag and first child to understand the XML structure
+    print(f"  Root tag: {root.tag}")
+    children = list(root)
+    if children:
+        first = children[0]
+        print(f"  First child tag: {first.tag}")
+        print(f"  First child attribs: {first.attrib}")
+        print(f"  First child sub-elements: {[c.tag for c in first]}")
+        # Print full first entry for inspection
+        print(f"  First entry XML: {ET.tostring(first, encoding='unicode')[:800]}")
 
-def get_public_only(path, params=None):
-    """Call with public key only — no secret key header."""
-    default_params = {"api_key": PUBLIC_KEY}
-    if params:
-        default_params.update(params)
-    resp = requests.get(f"{BASE_URL}{path}", params=default_params, timeout=30)
-    return resp
+    # Strip namespace from tags if present (e.g. {http://...}tag → tag)
+    def tag(el):
+        return el.tag.split('}', 1)[-1] if '}' in el.tag else el.tag
 
+    def find(el, name):
+        """Find child by local name, ignoring namespace."""
+        for child in el:
+            if tag(child) == name:
+                return child
+        return None
 
-def probe(label, resp):
-    print(f"\n--- {label} ---")
-    print(f"  Status: {resp.status_code}")
-    if resp.status_code == 200:
-        data = resp.json()
-        if isinstance(data, list):
-            print(f"  List of {len(data)} items")
-            if data:
-                print(f"  First item keys: {list(data[0].keys())}")
-                print(f"  First item: {json.dumps(data[0], indent=2)[:500]}")
-        elif isinstance(data, dict):
-            print(f"  Dict keys: {list(data.keys())}")
-            print(f"  Data: {json.dumps(data, indent=2)[:500]}")
-    else:
-        print(f"  Body: {resp.text[:200]}")
-    return resp.status_code == 200, resp
+    def findtext(el, name):
+        child = find(el, name)
+        return child.text.strip() if child is not None and child.text else None
+
+    # Accumulate ratings per product_id
+    buckets: dict[str, list[float]] = defaultdict(list)
+
+    # Try to handle common review XML formats
+    entries = list(root)
+    # If root is <feed> with <entry> children (Atom format)
+    # or <reviews> with <review> children, etc.
+    print(f"  Total top-level entries: {len(entries)}")
+
+    for entry in entries:
+        # Try multiple field name patterns
+        product_id = (
+            findtext(entry, "product_id")
+            or findtext(entry, "productId")
+            or findtext(entry, "external_id")
+            or findtext(entry, "internal_id")
+            or findtext(entry, "sku")
+        )
+
+        # Check nested product element
+        product_el = find(entry, "product")
+        if not product_id and product_el is not None:
+            product_id = (
+                findtext(product_el, "product_id")
+                or findtext(product_el, "id")
+                or findtext(product_el, "external_id")
+                or findtext(product_el, "internal_id")
+                or findtext(product_el, "sku")
+            )
+
+        # Google Shopping feed: g:product_ids / g:product_id
+        if not product_id:
+            for child in entry:
+                if tag(child) in ("product_ids", "product_id"):
+                    for sub in child:
+                        if tag(sub) in ("product_id", "gtin", "sku", "id"):
+                            product_id = sub.text.strip() if sub.text else None
+                            break
+
+        rating = (
+            findtext(entry, "rating")
+            or findtext(entry, "score")
+            or findtext(entry, "grade")
+        )
+
+        # Google Shopping: g:ratings/g:overall
+        if not rating:
+            ratings_el = find(entry, "ratings")
+            if ratings_el is not None:
+                rating = findtext(ratings_el, "overall")
+
+        if not product_id or rating is None:
+            continue
+
+        try:
+            buckets[str(product_id)].append(float(rating))
+        except (ValueError, TypeError):
+            continue
+
+    print(f"  Unique products found: {len(buckets)}")
+
+    records = []
+    for product_id, ratings in sorted(buckets.items()):
+        records.append({
+            "product_id":   product_id,
+            "avg_rating":   round(sum(ratings) / len(ratings), 2),
+            "review_count": len(ratings),
+        })
+
+    return records
 
 
 def main():
-    print("=" * 60)
-    print("LIPSCORE API DIAGNOSTIC")
-    print("=" * 60)
+    xml_text = fetch_xml()
+    print("Parsing XML and aggregating ratings...")
+    records = parse_and_aggregate(xml_text)
+    print(f"Products with ratings: {len(records)}")
 
-    results = {}
+    if records:
+        print(f"  Sample: {records[:3]}")
 
-    # --- 1. Individual product lookup (by known dashboard Product-IDs) ---
-    print("\n[1] Individual product endpoints (with full auth):")
-    for pid in KNOWN_PRODUCT_IDS:
-        ok, r = probe(f"GET /products/{pid}/", get(f"/products/{pid}/"))
-        if ok:
-            results["individual_product"] = r.json()
-            break
+    json_path = DOCS_DIR / "ratings.json"
+    json_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+    print(f"Written: {json_path}")
 
-    # --- 2. Individual product lookup (public key only) ---
-    print("\n[2] Individual product endpoints (public key only):")
-    for pid in KNOWN_PRODUCT_IDS:
-        ok, r = probe(f"GET /products/{pid}/ (public only)", get_public_only(f"/products/{pid}/"))
-        if ok:
-            results["individual_product_public"] = r.json()
-            break
+    csv_path = DOCS_DIR / "ratings.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["product_id", "avg_rating", "review_count"])
+        writer.writeheader()
+        writer.writerows(records)
+    print(f"Written: {csv_path}")
 
-    # --- 3. Products list with public key only (no secret header) ---
-    print("\n[3] Products list (public key only, no secret):")
-    ok, r = probe("GET /products/ (public only)", get_public_only("/products/", {"page": 1, "per_page": 3}))
-    if ok:
-        results["products_public"] = r.json()
-
-    # --- 4. Products list filtered by has_reviews ---
-    print("\n[4] Products list with has_reviews filter:")
-    for param_name in ["has_reviews", "with_reviews", "votes_min", "min_votes"]:
-        ok, r = probe(f"GET /products/?{param_name}=1", get(f"/products/", {"page": 1, "per_page": 3, param_name: 1}))
-        if ok and r.json():
-            data = r.json() if isinstance(r.json(), list) else []
-            if data and data[0].get("rating") is not None:
-                print(f"  *** FOUND RATINGS with param {param_name}! ***")
-                results["products_filtered"] = r.json()
-            break
-
-    # --- 5. Product ratings endpoint ---
-    print("\n[5] Dedicated ratings endpoints:")
-    for path in ["/ratings/", "/product_ratings/", "/products/ratings/", "/aggregations/"]:
-        ok, r = probe(f"GET {path}", get(path, {"page": 1, "per_page": 3}))
-        if ok:
-            results[f"ratings_endpoint_{path}"] = r.json()
-            break
-
-    # --- 6. Service reviews (might give a clue about the data structure) ---
-    print("\n[6] Service reviews endpoint:")
-    for path in ["/service_reviews/", "/surveys/"]:
-        ok, r = probe(f"GET {path}", get(path, {"page": 1, "per_page": 3}))
-        if ok:
-            results[f"service_reviews_{path}"] = r.json()
-            break
-
-    # --- 7. Votes endpoint ---
-    print("\n[7] Votes endpoints:")
-    for path in ["/votes/", "/product_votes/"]:
-        ok, r = probe(f"GET {path}", get(path, {"page": 1, "per_page": 3}))
-        if ok:
-            results[f"votes_{path}"] = r.json()
-            break
-
-    # --- 8. First 3 products from normal products list (with secret key) ---
-    print("\n[8] First 3 products (normal auth, for comparison):")
-    ok, r = probe("GET /products/ (normal, per_page=3)", get("/products/", {"page": 1, "per_page": 3}))
-    if ok:
-        results["products_normal_sample"] = r.json()
-
-    # Write diagnostic results to docs/
-    diag_path = DOCS_DIR / "diagnostic.json"
-    diag_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
-    print(f"\n\nDiagnostic results written to: {diag_path}")
-    print("Check https://christoffer-cherry.github.io/feed/diagnostic.json for full output")
+    index_path = DOCS_DIR / "index.html"
+    index_path.write_text(
+        "<html><body>"
+        f"<p>{len(records)} products with ratings.</p>"
+        "<p><a href='ratings.json'>ratings.json</a></p>"
+        "<p><a href='ratings.csv'>ratings.csv</a></p>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    print("Done.")
 
 
 if __name__ == "__main__":
