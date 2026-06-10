@@ -14,6 +14,7 @@ import csv
 import json
 import os
 import sys
+import time
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
@@ -39,6 +40,31 @@ def fetch_xml() -> str:
     if resp.status_code != 200:
         sys.exit(f"ERROR: {resp.status_code} — {resp.text[:300]}")
     return resp.text
+
+
+_shopify_id_cache: dict[str, str | None] = {}
+
+def shopify_product_id_from_url(product_url: str) -> str | None:
+    """
+    Fetch Shopify Product ID from a public product URL.
+    e.g. https://vipatur.no/products/some-handle
+         → https://vipatur.no/products/some-handle.json
+         → product["id"]
+    """
+    if product_url in _shopify_id_cache:
+        return _shopify_id_cache[product_url]
+
+    json_url = product_url.rstrip("/") + ".json"
+    try:
+        resp = requests.get(json_url, timeout=10)
+        if resp.status_code == 200:
+            pid = str(resp.json()["product"]["id"])
+            _shopify_id_cache[product_url] = pid
+            return pid
+    except Exception:
+        pass
+    _shopify_id_cache[product_url] = None
+    return None
 
 
 def parse_and_aggregate(xml_text: str) -> list[dict]:
@@ -89,9 +115,12 @@ def parse_and_aggregate(xml_text: str) -> list[dict]:
     if entries:
         print(f"  First entry XML:\n{ET.tostring(entries[0], encoding='unicode')[:1200]}")
 
+    # First pass: collect (product_url, rating) pairs
+    url_ratings: list[tuple[str, float]] = []
+    skipped = 0
+
     for entry in entries:
         # --- Rating ---
-        # Google PRF v2: <ratings><overall>4</overall></ratings>
         rating = None
         ratings_el = find(entry, "ratings")
         if ratings_el is not None:
@@ -99,43 +128,44 @@ def parse_and_aggregate(xml_text: str) -> list[dict]:
         if rating is None:
             rating = findtext(entry, "rating") or findtext(entry, "score")
 
-        # --- Product ID ---
-        # Google PRF v2: <products><product><product_ids><skus><sku>ID</sku></skus></product_ids></product></products>
-        product_id = None
+        # --- Product URL (used to look up Shopify Product ID) ---
+        product_url = None
         products_el = find(entry, "products")
         if products_el is not None:
             product_el = find(products_el, "product")
             if product_el is not None:
-                pid_el = find(product_el, "product_ids")
-                if pid_el is not None:
-                    # Try skus first, then gtins
-                    for container_name, leaf_name in [("skus", "sku"), ("gtins", "gtin"), ("mpns", "mpn")]:
-                        cont = find(pid_el, container_name)
-                        if cont is not None:
-                            leaf = find(cont, leaf_name)
-                            if leaf is not None and leaf.text:
-                                product_id = leaf.text.strip()
-                                break
-                    # Fallback: direct product_id child
-                    if not product_id:
-                        product_id = findtext(pid_el, "product_id")
+                product_url = findtext(product_el, "product_url")
 
-        # Fallback: direct fields on entry
-        if not product_id:
-            product_id = (
-                findtext(entry, "product_id")
-                or findtext(entry, "external_id")
-                or findtext(entry, "internal_id")
-                or findtext(entry, "sku")
-            )
-
-        if not product_id or rating is None:
+        if not product_url or rating is None:
+            skipped += 1
             continue
 
         try:
-            buckets[str(product_id)].append(float(rating))
+            url_ratings.append((product_url, float(rating)))
         except (ValueError, TypeError):
+            skipped += 1
+
+    print(f"  Reviews with product URL + rating: {len(url_ratings)} (skipped: {skipped})")
+
+    # Deduplicate URLs to minimise Shopify API calls
+    unique_urls = list(dict.fromkeys(u for u, _ in url_ratings))
+    print(f"  Unique product URLs: {len(unique_urls)} — resolving Shopify Product IDs...")
+
+    for i, url in enumerate(unique_urls, 1):
+        shopify_product_id_from_url(url)
+        if i % 10 == 0:
+            print(f"    Resolved {i}/{len(unique_urls)}...")
+            time.sleep(0.5)  # be polite to Shopify
+
+    print(f"  Resolved {len(_shopify_id_cache)} URLs, "
+          f"{sum(1 for v in _shopify_id_cache.values() if v)} succeeded")
+
+    # Second pass: aggregate by Shopify Product ID
+    for product_url, rating_val in url_ratings:
+        shopify_id = _shopify_id_cache.get(product_url)
+        if not shopify_id:
             continue
+        buckets[shopify_id].append(rating_val)
 
     print(f"  Unique products found: {len(buckets)}")
 
