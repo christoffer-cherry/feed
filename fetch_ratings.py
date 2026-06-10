@@ -1,144 +1,127 @@
 """
-Fetch Lipscore Google Shopping XML feed, aggregate ratings per product,
-and write docs/ratings.json + docs/ratings.csv for GitHub Pages.
+Fetch aggregated per-product ratings from Lipscore API and write
+docs/ratings.json + docs/ratings.csv for GitHub Pages.
+
+Auth (confirmed by Lipscore support):
+  - api_key as query parameter  (public API key)
+  - X-Authorization header      (secret API key)
 
 Required env vars:
-  LIPSCORE_XML_URL   — full URL to the export.xml feed
-  LIPSCORE_XML_USER  — basic auth username
-  LIPSCORE_XML_PASS  — basic auth password
+  LIPSCORE_PUBLIC_KEY   — public API key (api_key query param)
+  LIPSCORE_SECRET_KEY   — secret API key (X-Authorization header)
 """
 
 import csv
 import json
 import os
 import sys
-import xml.etree.ElementTree as ET
-from collections import defaultdict
+import time
 from pathlib import Path
 
 import requests
 
-XML_URL  = os.environ.get("LIPSCORE_XML_URL")
-XML_USER = os.environ.get("LIPSCORE_XML_USER")
-XML_PASS = os.environ.get("LIPSCORE_XML_PASS")
+PUBLIC_KEY = os.environ.get("LIPSCORE_PUBLIC_KEY")
+SECRET_KEY = os.environ.get("LIPSCORE_SECRET_KEY")
 
-for var, val in [("LIPSCORE_XML_URL", XML_URL), ("LIPSCORE_XML_USER", XML_USER), ("LIPSCORE_XML_PASS", XML_PASS)]:
+for var, val in [("LIPSCORE_PUBLIC_KEY", PUBLIC_KEY), ("LIPSCORE_SECRET_KEY", SECRET_KEY)]:
     if not val:
         sys.exit(f"ERROR: {var} environment variable is not set.")
 
-DOCS_DIR = Path(__file__).parent / "docs"
+BASE_URL   = "https://api.lipscore.com"
+HEADERS    = {"X-Authorization": SECRET_KEY}
+PAGE_SIZE  = 100
+DOCS_DIR   = Path(__file__).parent / "docs"
 DOCS_DIR.mkdir(exist_ok=True)
 
 
-def fetch_xml() -> str:
-    print(f"Fetching XML feed...")
-    resp = requests.get(XML_URL, auth=(XML_USER, XML_PASS), timeout=60)
-    print(f"  Status: {resp.status_code}  Size: {len(resp.content)} bytes")
-    if resp.status_code != 200:
-        sys.exit(f"ERROR: Got {resp.status_code}. Body: {resp.text[:300]}")
-    return resp.text
+def fetch_all_products() -> list[dict]:
+    products = []
+    page = 1
+
+    while True:
+        params = {
+            "api_key":  PUBLIC_KEY,
+            "page":     page,
+            "per_page": PAGE_SIZE,
+        }
+        resp = requests.get(
+            f"{BASE_URL}/products/",
+            headers=HEADERS,
+            params=params,
+            timeout=30,
+        )
+
+        print(f"  Page {page}: HTTP {resp.status_code}")
+
+        if resp.status_code != 200:
+            sys.exit(f"ERROR: {resp.status_code} — {resp.text[:300]}")
+
+        batch = resp.json()
+        if isinstance(batch, dict):
+            batch = batch.get("products") or batch.get("data") or []
+
+        if not batch:
+            break
+
+        products.extend(batch)
+        print(f"    {len(batch)} products (total: {len(products)})")
+
+        # Print keys from first product so we can verify field names
+        if page == 1 and batch:
+            print(f"    Sample keys: {list(batch[0].keys())}")
+            print(f"    Sample product: {batch[0]}")
+
+        if len(batch) < PAGE_SIZE:
+            break
+
+        page += 1
+        time.sleep(0.2)
+
+    return products
 
 
-def aggregate(xml_text: str) -> list[dict]:
-    """Parse XML and compute avg rating + review count per product."""
-    root = ET.fromstring(xml_text)
+def normalise(product: dict) -> dict | None:
+    # Shopify Product ID is stored as external_id / internal_id
+    product_id = (
+        product.get("external_id")
+        or product.get("internal_id")
+        or product.get("product_id")
+        or product.get("id")
+    )
+    avg_rating = (
+        product.get("avg_rating")
+        or product.get("average_rating")
+        or product.get("rating")
+    )
+    review_count = (
+        product.get("votes_count")
+        or product.get("reviews_count")
+        or product.get("review_count")
+        or 0
+    )
 
-    # Collect all namespaces used in the document
-    ns = {}
-    for prefix, uri in ET.iterparse.__doc__ and [] or []:
-        ns[prefix] = uri
+    if not product_id or avg_rating is None:
+        return None
 
-    # Print root tag so we can see the structure
-    print(f"  Root tag: {root.tag}")
-    if len(root) > 0:
-        first = root[0]
-        print(f"  First child tag: {first.tag}")
-        print(f"  First child children: {[c.tag for c in first][:10]}")
-
-    # Ratings accumulator: product_id -> [rating, rating, ...]
-    ratings_map = defaultdict(list)
-
-    # Try multiple XML structures Lipscore might use
-    # Strategy 1: Google Shopping Product Reviews feed
-    # <entry><g:id>...</g:id><g:rating>...</g:rating></entry>
-    g_ns = "http://base.google.com/ns/1.0"
-
-    for entry in root.iter("entry"):
-        product_id = None
-        rating = None
-
-        # Try g:id / g:rating (Google Shopping format)
-        id_el = entry.find(f"{{{g_ns}}}id") or entry.find("id")
-        rating_el = entry.find(f"{{{g_ns}}}rating") or entry.find("rating")
-
-        if id_el is not None:
-            product_id = (id_el.text or "").strip()
-        if rating_el is not None:
-            try:
-                rating = float(rating_el.text)
-            except (TypeError, ValueError):
-                pass
-
-        if product_id and rating is not None:
-            ratings_map[product_id].append(rating)
-
-    # Strategy 2: Google Customer Reviews format
-    # <review><products><product><product_ids><skus><sku>...</sku>...
-    # <ratings><overall>4</overall></ratings>
-    if not ratings_map:
-        for review in root.iter("review"):
-            rating = None
-            overall = review.find(".//overall")
-            if overall is not None:
-                try:
-                    rating = float(overall.text)
-                except (TypeError, ValueError):
-                    pass
-
-            if rating is None:
-                continue
-
-            # Collect all product IDs mentioned in this review
-            for sku in review.findall(".//sku"):
-                if sku.text:
-                    ratings_map[sku.text.strip()].append(rating)
-            for gtin in review.findall(".//gtin"):
-                if gtin.text:
-                    ratings_map[gtin.text.strip()].append(rating)
-            for mpn in review.findall(".//mpn"):
-                if mpn.text:
-                    ratings_map[mpn.text.strip()].append(rating)
-
-    print(f"  Unique products found: {len(ratings_map)}")
-
-    if not ratings_map:
-        # Dump a sample of the XML to help diagnose structure
-        print("  WARNING: Could not parse any ratings. Raw XML sample:")
-        print(xml_text[:1000])
-
-    records = []
-    for product_id, ratings in sorted(ratings_map.items()):
-        avg = round(sum(ratings) / len(ratings), 2)
-        records.append({
-            "product_id": product_id,
-            "avg_rating": avg,
-            "review_count": len(ratings),
-        })
-
-    return records
+    return {
+        "product_id":   str(product_id),
+        "avg_rating":   round(float(avg_rating), 2),
+        "review_count": int(review_count),
+    }
 
 
 def main():
-    xml_text = fetch_xml()
-    records = aggregate(xml_text)
-    print(f"Total products with ratings: {len(records)}")
+    print("Fetching products from Lipscore API...")
+    raw = fetch_all_products()
+    print(f"Total products fetched: {len(raw)}")
 
-    # Write JSON
+    records = [r for p in raw if (r := normalise(p)) is not None]
+    print(f"Products with ratings: {len(records)}")
+
     json_path = DOCS_DIR / "ratings.json"
     json_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
     print(f"Written: {json_path}")
 
-    # Write CSV
     csv_path = DOCS_DIR / "ratings.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["product_id", "avg_rating", "review_count"])
@@ -146,7 +129,6 @@ def main():
         writer.writerows(records)
     print(f"Written: {csv_path}")
 
-    # Minimal index page
     index_path = DOCS_DIR / "index.html"
     index_path.write_text(
         "<html><body>"
