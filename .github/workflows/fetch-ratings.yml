@@ -29,8 +29,9 @@ jobs:
 
       - name: Fetch ratings from Lipscore
         env:
-          LIPSCORE_PUBLIC_KEY: ${{ secrets.LIPSCORE_PUBLIC_KEY }}
-          LIPSCORE_SECRET_KEY: ${{ secrets.LIPSCORE_SECRET_KEY }}
+          LIPSCORE_XML_URL:  ${{ secrets.LIPSCORE_XML_URL }}
+          LIPSCORE_XML_USER: ${{ secrets.LIPSCORE_XML_USER }}
+          LIPSCORE_XML_PASS: ${{ secrets.LIPSCORE_XML_PASS }}
         run: python fetch_ratings.py
 
       - name: Commit updated feed files
