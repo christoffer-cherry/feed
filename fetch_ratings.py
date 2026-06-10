@@ -1,12 +1,7 @@
 """
-Fetch per-product ratings from Lipscore by aggregating individual reviews.
+DIAGNOSTIC: Probe Lipscore API to find correct endpoint and field names for ratings.
 
-Uses /reviews/ endpoint (not /products/) because the products list endpoint
-does not populate rating aggregates for this account.
-
-Auth (confirmed by Lipscore support):
-  - api_key as query parameter  (public API key)
-  - X-Authorization header      (secret API key)
+Tries multiple approaches and logs the full responses so we can identify what works.
 
 Required env vars:
   LIPSCORE_PUBLIC_KEY   — public API key (api_key query param)
@@ -30,155 +25,127 @@ for var, val in [("LIPSCORE_PUBLIC_KEY", PUBLIC_KEY), ("LIPSCORE_SECRET_KEY", SE
     if not val:
         sys.exit(f"ERROR: {var} environment variable is not set.")
 
-BASE_URL  = "https://api.lipscore.com"
-HEADERS   = {"X-Authorization": SECRET_KEY}
-PAGE_SIZE = 100
-DOCS_DIR  = Path(__file__).parent / "docs"
+BASE_URL = "https://api.lipscore.com"
+DOCS_DIR = Path(__file__).parent / "docs"
 DOCS_DIR.mkdir(exist_ok=True)
 
-
-REVIEW_ENDPOINTS = [
-    "/product_reviews/",
-    "/reviews/",
-    "/votes/",
-]
+# Product-IDs seen in the Lipscore dashboard (confirmed to have reviews)
+KNOWN_PRODUCT_IDS = ["10068807844120", "10068813218072", "9425864622360"]
 
 
-def fetch_all_reviews() -> list[dict]:
-    """Fetch all product reviews from Lipscore API, trying known endpoint paths."""
-    # Discover which endpoint works
-    working_endpoint = None
-    for ep in REVIEW_ENDPOINTS:
-        probe = requests.get(
-            f"{BASE_URL}{ep}",
-            headers=HEADERS,
-            params={"api_key": PUBLIC_KEY, "page": 1, "per_page": 1},
-            timeout=30,
-        )
-        print(f"  Probe {ep}: HTTP {probe.status_code}")
-        if probe.status_code == 200:
-            working_endpoint = ep
-            break
-
-    if not working_endpoint:
-        sys.exit("ERROR: No working reviews endpoint found. Tried: " + ", ".join(REVIEW_ENDPOINTS))
-
-    print(f"  Using endpoint: {working_endpoint}")
-
-    reviews = []
-    page = 1
-
-    while True:
-        params = {
-            "api_key":  PUBLIC_KEY,
-            "page":     page,
-            "per_page": PAGE_SIZE,
-        }
-        resp = requests.get(
-            f"{BASE_URL}{working_endpoint}",
-            headers=HEADERS,
-            params=params,
-            timeout=30,
-        )
-
-        print(f"  Page {page}: HTTP {resp.status_code}", end=" ")
-
-        if resp.status_code == 500:
-            print(f"— server error. Saving {len(reviews)} reviews fetched so far.")
-            break
-        if resp.status_code != 200:
-            sys.exit(f"\nERROR: {resp.status_code} — {resp.text[:300]}")
-
-        batch = resp.json()
-        if isinstance(batch, dict):
-            batch = batch.get("reviews") or batch.get("data") or []
-
-        print(f"— {len(batch)} reviews (total: {len(reviews) + len(batch)})")
-
-        if not batch:
-            break
-
-        reviews.extend(batch)
-
-        # Log first review to verify field names
-        if page == 1 and batch:
-            print(f"    Sample keys: {list(batch[0].keys())}")
-            print(f"    Sample review: {batch[0]}")
-
-        if len(batch) < PAGE_SIZE:
-            break
-
-        page += 1
-        time.sleep(0.2)
-
-    return reviews
+def get(path, params=None, headers=None):
+    default_headers = {"X-Authorization": SECRET_KEY}
+    if headers:
+        default_headers.update(headers)
+    default_params = {"api_key": PUBLIC_KEY}
+    if params:
+        default_params.update(params)
+    resp = requests.get(f"{BASE_URL}{path}", headers=default_headers, params=default_params, timeout=30)
+    return resp
 
 
-def aggregate_by_product(reviews: list[dict]) -> list[dict]:
-    """Group reviews by product_id and compute avg_rating + review_count."""
-    buckets: dict[str, list[float]] = defaultdict(list)
+def get_public_only(path, params=None):
+    """Call with public key only — no secret key header."""
+    default_params = {"api_key": PUBLIC_KEY}
+    if params:
+        default_params.update(params)
+    resp = requests.get(f"{BASE_URL}{path}", params=default_params, timeout=30)
+    return resp
 
-    for r in reviews:
-        # Product-ID field names to try (check sample log to confirm)
-        product_id = (
-            r.get("product_id")
-            or r.get("product", {}).get("id") if isinstance(r.get("product"), dict) else None
-            or r.get("product", {}).get("internal_id") if isinstance(r.get("product"), dict) else None
-            or r.get("internal_id")
-        )
-        rating = r.get("rating") or r.get("score")
 
-        if not product_id or rating is None:
-            continue
-
-        try:
-            buckets[str(product_id)].append(float(rating))
-        except (ValueError, TypeError):
-            continue
-
-    records = []
-    for product_id, ratings in buckets.items():
-        records.append({
-            "product_id":   product_id,
-            "avg_rating":   round(sum(ratings) / len(ratings), 2),
-            "review_count": len(ratings),
-        })
-
-    return sorted(records, key=lambda x: x["product_id"])
+def probe(label, resp):
+    print(f"\n--- {label} ---")
+    print(f"  Status: {resp.status_code}")
+    if resp.status_code == 200:
+        data = resp.json()
+        if isinstance(data, list):
+            print(f"  List of {len(data)} items")
+            if data:
+                print(f"  First item keys: {list(data[0].keys())}")
+                print(f"  First item: {json.dumps(data[0], indent=2)[:500]}")
+        elif isinstance(data, dict):
+            print(f"  Dict keys: {list(data.keys())}")
+            print(f"  Data: {json.dumps(data, indent=2)[:500]}")
+    else:
+        print(f"  Body: {resp.text[:200]}")
+    return resp.status_code == 200, resp
 
 
 def main():
-    print("Fetching reviews from Lipscore API...")
-    raw_reviews = fetch_all_reviews()
-    print(f"Total reviews fetched: {len(raw_reviews)}")
+    print("=" * 60)
+    print("LIPSCORE API DIAGNOSTIC")
+    print("=" * 60)
 
-    records = aggregate_by_product(raw_reviews)
-    print(f"Products with ratings: {len(records)}")
+    results = {}
 
-    if records:
-        print(f"  Sample output: {records[:3]}")
+    # --- 1. Individual product lookup (by known dashboard Product-IDs) ---
+    print("\n[1] Individual product endpoints (with full auth):")
+    for pid in KNOWN_PRODUCT_IDS:
+        ok, r = probe(f"GET /products/{pid}/", get(f"/products/{pid}/"))
+        if ok:
+            results["individual_product"] = r.json()
+            break
 
-    json_path = DOCS_DIR / "ratings.json"
-    json_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
-    print(f"Written: {json_path}")
+    # --- 2. Individual product lookup (public key only) ---
+    print("\n[2] Individual product endpoints (public key only):")
+    for pid in KNOWN_PRODUCT_IDS:
+        ok, r = probe(f"GET /products/{pid}/ (public only)", get_public_only(f"/products/{pid}/"))
+        if ok:
+            results["individual_product_public"] = r.json()
+            break
 
-    csv_path = DOCS_DIR / "ratings.csv"
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["product_id", "avg_rating", "review_count"])
-        writer.writeheader()
-        writer.writerows(records)
-    print(f"Written: {csv_path}")
+    # --- 3. Products list with public key only (no secret header) ---
+    print("\n[3] Products list (public key only, no secret):")
+    ok, r = probe("GET /products/ (public only)", get_public_only("/products/", {"page": 1, "per_page": 3}))
+    if ok:
+        results["products_public"] = r.json()
 
-    index_path = DOCS_DIR / "index.html"
-    index_path.write_text(
-        "<html><body>"
-        f"<p>{len(records)} products with ratings.</p>"
-        "<p><a href='ratings.json'>ratings.json</a></p>"
-        "<p><a href='ratings.csv'>ratings.csv</a></p>"
-        "</body></html>",
-        encoding="utf-8",
-    )
-    print("Done.")
+    # --- 4. Products list filtered by has_reviews ---
+    print("\n[4] Products list with has_reviews filter:")
+    for param_name in ["has_reviews", "with_reviews", "votes_min", "min_votes"]:
+        ok, r = probe(f"GET /products/?{param_name}=1", get(f"/products/", {"page": 1, "per_page": 3, param_name: 1}))
+        if ok and r.json():
+            data = r.json() if isinstance(r.json(), list) else []
+            if data and data[0].get("rating") is not None:
+                print(f"  *** FOUND RATINGS with param {param_name}! ***")
+                results["products_filtered"] = r.json()
+            break
+
+    # --- 5. Product ratings endpoint ---
+    print("\n[5] Dedicated ratings endpoints:")
+    for path in ["/ratings/", "/product_ratings/", "/products/ratings/", "/aggregations/"]:
+        ok, r = probe(f"GET {path}", get(path, {"page": 1, "per_page": 3}))
+        if ok:
+            results[f"ratings_endpoint_{path}"] = r.json()
+            break
+
+    # --- 6. Service reviews (might give a clue about the data structure) ---
+    print("\n[6] Service reviews endpoint:")
+    for path in ["/service_reviews/", "/surveys/"]:
+        ok, r = probe(f"GET {path}", get(path, {"page": 1, "per_page": 3}))
+        if ok:
+            results[f"service_reviews_{path}"] = r.json()
+            break
+
+    # --- 7. Votes endpoint ---
+    print("\n[7] Votes endpoints:")
+    for path in ["/votes/", "/product_votes/"]:
+        ok, r = probe(f"GET {path}", get(path, {"page": 1, "per_page": 3}))
+        if ok:
+            results[f"votes_{path}"] = r.json()
+            break
+
+    # --- 8. First 3 products from normal products list (with secret key) ---
+    print("\n[8] First 3 products (normal auth, for comparison):")
+    ok, r = probe("GET /products/ (normal, per_page=3)", get("/products/", {"page": 1, "per_page": 3}))
+    if ok:
+        results["products_normal_sample"] = r.json()
+
+    # Write diagnostic results to docs/
+    diag_path = DOCS_DIR / "diagnostic.json"
+    diag_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    print(f"\n\nDiagnostic results written to: {diag_path}")
+    print("Check https://christoffer-cherry.github.io/feed/diagnostic.json for full output")
 
 
 if __name__ == "__main__":
