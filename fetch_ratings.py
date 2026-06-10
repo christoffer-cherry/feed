@@ -44,17 +44,6 @@ def fetch_xml() -> str:
 def parse_and_aggregate(xml_text: str) -> list[dict]:
     root = ET.fromstring(xml_text)
 
-    # Log the root tag and first child to understand the XML structure
-    print(f"  Root tag: {root.tag}")
-    children = list(root)
-    if children:
-        first = children[0]
-        print(f"  First child tag: {first.tag}")
-        print(f"  First child attribs: {first.attrib}")
-        print(f"  First child sub-elements: {[c.tag for c in first]}")
-        # Print full first entry for inspection
-        print(f"  First entry XML: {ET.tostring(first, encoding='unicode')[:800]}")
-
     # Strip namespace from tags if present (e.g. {http://...}tag → tag)
     def tag(el):
         return el.tag.split('}', 1)[-1] if '}' in el.tag else el.tag
@@ -70,14 +59,34 @@ def parse_and_aggregate(xml_text: str) -> list[dict]:
         child = find(el, name)
         return child.text.strip() if child is not None and child.text else None
 
+    # Log the root tag and all top-level children to understand the XML structure
+    print(f"  Root tag: {root.tag}")
+    top_children = list(root)
+    print(f"  Top-level children ({len(top_children)}): {[tag(c) for c in top_children]}")
+    for child in top_children:
+        grandchildren = list(child)
+        print(f"    <{tag(child)}> has {len(grandchildren)} children")
+        if grandchildren:
+            first_gc = grandchildren[0]
+            print(f"      First grandchild tag: {tag(first_gc)}")
+            print(f"      First grandchild sub-elements: {[tag(c) for c in first_gc]}")
+            print(f"      First grandchild XML: {ET.tostring(first_gc, encoding='unicode')[:600]}")
+            break  # only show first non-empty container
+
     # Accumulate ratings per product_id
     buckets: dict[str, list[float]] = defaultdict(list)
 
-    # Try to handle common review XML formats
-    entries = list(root)
-    # If root is <feed> with <entry> children (Atom format)
-    # or <reviews> with <review> children, etc.
-    print(f"  Total top-level entries: {len(entries)}")
+    # Find the container with the most children — that's where the reviews are
+    best_container = root
+    max_children = len(top_children)
+    for child in top_children:
+        n = len(list(child))
+        if n > max_children:
+            max_children = n
+            best_container = child
+
+    entries = list(best_container)
+    print(f"  Parsing {len(entries)} entries from <{tag(best_container)}>")
 
     for entry in entries:
         # Try multiple field name patterns
