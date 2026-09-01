@@ -55,14 +55,20 @@ def shopify_product_id_from_url(product_url: str) -> str | None:
         return _shopify_id_cache[product_url]
 
     json_url = product_url.rstrip("/") + ".json"
-    try:
-        resp = requests.get(json_url, timeout=10)
-        if resp.status_code == 200:
-            pid = str(resp.json()["product"]["id"])
-            _shopify_id_cache[product_url] = pid
-            return pid
-    except Exception:
-        pass
+    for attempt in range(4):
+        try:
+            resp = requests.get(json_url, timeout=15)
+            if resp.status_code == 200:
+                pid = str(resp.json()["product"]["id"])
+                _shopify_id_cache[product_url] = pid
+                return pid
+            if resp.status_code == 404:
+                break  # product doesn't exist, no point retrying
+            if resp.status_code == 429:
+                time.sleep(2 ** attempt)  # exponential backoff on rate limit
+                continue
+        except Exception:
+            time.sleep(1)
     _shopify_id_cache[product_url] = None
     return None
 
