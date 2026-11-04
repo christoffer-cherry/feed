@@ -46,7 +46,7 @@
 {"product_id": "10068809711896", "avg_rating": 4.5, "review_count": 2}
 {"product_id": "10068809810200", "avg_rating": 4.0, "review_count": 1}
 {"product_id": "10068809875736", "avg_rating": 3.0, "review_count": 2}
-{"product_id": "10068809908504", "avg_rating": 4.5, "review_count": 2}
+{"product_id": "10068809908504", "avg_rating": 4.67, "review_count": 3}
 {"product_id": "10068809974040", "avg_rating": 5.0, "review_count": 1}
 {"product_id": "10068810039576", "avg_rating": 4.0, "review_count": 1}
 {"product_id": "10068810137880", "avg_rating": 4.5, "review_count": 2}
@@ -62,8 +62,9 @@
 {"product_id": "10068811481368", "avg_rating": 4.0, "review_count": 1}
 {"product_id": "10068811841816", "avg_rating": 4.5, "review_count": 2}
 {"product_id": "10068811907352", "avg_rating": 4.67, "review_count": 3}
+{"product_id": "10068812071192", "avg_rating": 5.0, "review_count": 3}
 {"product_id": "10068812169496", "avg_rating": 5.0, "review_count": 1}
-{"product_id": "10068812595480", "avg_rating": 4.67, "review_count": 3}
+{"product_id": "10068812595480", "avg_rating": 4.5, "review_count": 2}
 {"product_id": "10068812661016", "avg_rating": 5.0, "review_count": 2}
 {"product_id": "10068812759320", "avg_rating": 4.0, "review_count": 1}
 {"product_id": "10068812988696", "avg_rating": 5.0, "review_count": 1}
@@ -114,7 +115,7 @@
 {"product_id": "9137055138072", "avg_rating": 4.71, "review_count": 7}
 {"product_id": "9137055498520", "avg_rating": 5.0, "review_count": 2}
 {"product_id": "9153884750104", "avg_rating": 4.0, "review_count": 8}
-{"product_id": "9153884913944", "avg_rating": 4.6, "review_count": 5}
+{"product_id": "9153884913944", "avg_rating": 4.67, "review_count": 6}
 {"product_id": "9153885045016", "avg_rating": 4.64, "review_count": 11}
 {"product_id": "9153885143320", "avg_rating": 4.6, "review_count": 15}
 {"product_id": "9154084634904", "avg_rating": 4.83, "review_count": 23}
@@ -184,7 +185,7 @@
 {"product_id": "9425864655128", "avg_rating": 5.0, "review_count": 1}
 {"product_id": "9425864917272", "avg_rating": 4.77, "review_count": 13}
 {"product_id": "9430049620248", "avg_rating": 4.0, "review_count": 2}
-{"product_id": "9430049784088", "avg_rating": 4.2, "review_count": 5}
+{"product_id": "9430049784088", "avg_rating": 4.33, "review_count": 6}
 {"product_id": "9430050210072", "avg_rating": 5.0, "review_count": 2}
 {"product_id": "9430396567832", "avg_rating": 5.0, "review_count": 1}
 {"product_id": "9430396698904", "avg_rating": 5.0, "review_count": 3}
@@ -201,7 +202,7 @@
 {"product_id": "9430547726616", "avg_rating": 3.0, "review_count": 4}
 {"product_id": "9430547792152", "avg_rating": 5.0, "review_count": 2}
 {"product_id": "9430547890456", "avg_rating": 4.5, "review_count": 4}
-{"product_id": "9430547923224", "avg_rating": 4.6, "review_count": 5}
+{"product_id": "9430547923224", "avg_rating": 4.67, "review_count": 6}
 {"product_id": "9430547955992", "avg_rating": 4.11, "review_count": 9}
 {"product_id": "9430548054296", "avg_rating": 4.0, "review_count": 1}
 {"product_id": "9430548087064", "avg_rating": 4.57, "review_count": 7}
@@ -216,6 +217,7 @@
 {"product_id": "9430549692696", "avg_rating": 4.33, "review_count": 6}
 {"product_id": "9430549856536", "avg_rating": 4.6, "review_count": 10}
 {"product_id": "9430549922072", "avg_rating": 5.0, "review_count": 4}
+{"product_id": "9430550544664", "avg_rating": 4.5, "review_count": 2}
 {"product_id": "9430551658776", "avg_rating": 5.0, "review_count": 1}
 {"product_id": "9430552150296", "avg_rating": 4.82, "review_count": 11}
 {"product_id": "9430552215832", "avg_rating": 4.11, "review_count": 9}
@@ -228,7 +230,7 @@
 {"product_id": "9430553493784", "avg_rating": 5.0, "review_count": 1}
 {"product_id": "9430553657624", "avg_rating": 5.0, "review_count": 1}
 {"product_id": "9430553723160", "avg_rating": 2.0, "review_count": 1}
-{"product_id": "9430554018072", "avg_rating": 3.5, "review_count": 2}
+{"product_id": "9430554018072", "avg_rating": 3.67, "review_count": 3}
 {"product_id": "9430554181912", "avg_rating": 5.0, "review_count": 1}
 {"product_id": "9430554411288", "avg_rating": 4.79, "review_count": 14}
 {"product_id": "9430554509592", "avg_rating": 4.0, "review_count": 1}
@@ -237,7 +239,6 @@
 {"product_id": "9430555164952", "avg_rating": 4.33, "review_count": 3}
 {"product_id": "9430555885848", "avg_rating": 2.0, "review_count": 1}
 {"product_id": "9430556442904", "avg_rating": 4.0, "review_count": 5}
-{"product_id": "9430556803352", "avg_rating": 5.0, "review_count": 1}
 {"product_id": "9430558245144", "avg_rating": 5.0, "review_count": 1}
 {"product_id": "9430558376216", "avg_rating": 5.0, "review_count": 1}
 {"product_id": "9430560014616", "avg_rating": 4.5, "review_count": 2}
@@ -278,7 +279,7 @@
 {"product_id": "9651229589784", "avg_rating": 4.5, "review_count": 4}
 {"product_id": "9651230114072", "avg_rating": 5.0, "review_count": 5}
 {"product_id": "9651230146840", "avg_rating": 5.0, "review_count": 2}
-{"product_id": "9651230212376", "avg_rating": 5.0, "review_count": 2}
+{"product_id": "9651230212376", "avg_rating": 4.33, "review_count": 3}
 {"product_id": "9651231457560", "avg_rating": 4.57, "review_count": 7}
 {"product_id": "9651231490328", "avg_rating": 3.75, "review_count": 4}
 {"product_id": "9651231621400", "avg_rating": 3.6, "review_count": 5}
